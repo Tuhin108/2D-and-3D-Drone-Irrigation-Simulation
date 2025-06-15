@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drone Simulation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            background-color: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        #alert {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: red;
+            font-size: 48px;
+            font-weight: bold;
+            font-family: Arial, sans-serif;
+            display: none;
+        }
+        #controls {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            background-color: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        #sectorSelector {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            background-color: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        button {
+            margin: 5px;
+            padding: 5px 10px;
+            cursor: pointer;
+        }
+        .selected {
+            background-color: #4CAF50;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <h2>Drone Simulation</h2>
+        <p>Drone Position: <span id="position">0, 0, 0</span></p>
+        <p>Current Sector: <span id="sector">None</span></p>
+        <p>Spraying: <span id="spraying">Off</span></p>
+        <p>Hydration Level: <span id="hydration">0%</span></p>
+    </div>
+    <div id="alert">OUT OF BOUNDS!</div>
+    <div id="controls">
+        <h3>Controls:</h3>
+        <p>W/A/S/D - Move drone forward/left/backward/right</p>
+        <p>Q/E - Raise/Lower drone</p>
+        <p>Space - Toggle water spray</p>
+    </div>
+    <div id="sectorSelector">
+        <h3>Select Sector:</h3>
+        <button id="sector1" onclick="selectSector(1)">Sector 1</button>
+        <button id="sector2" onclick="selectSector(2)">Sector 2</button>
+        <button id="sector3" onclick="selectSector(3)">Sector 3</button>
+        <button id="sector4" onclick="selectSector(4)">Sector 4</button>
+    </div>
+
+    <script>
+        // Scene setup
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+        
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(10, 20, 10);
+        scene.add(directionalLight);
+        
+        // Sky background
+        scene.background = new THREE.Color(0x87CEEB);
+        
+        // Ground texture setup - using canvas for dynamic texture
+        const groundSize = 100;
+        const textureSize = 512;
+        const textureCanvas = document.createElement('canvas');
+        textureCanvas.width = textureSize;
+        textureCanvas.height = textureSize;
+        const ctx = textureCanvas.getContext('2d');
+        
+        // Initial green color for dry land
+        ctx.fillStyle = '#7CFC00';
+        ctx.fillRect(0, 0, textureSize, textureSize);
+        
+        // Create texture from canvas
+        const groundTexture = new THREE.CanvasTexture(textureCanvas);
+        groundTexture.wrapS = THREE.RepeatWrapping;
+        groundTexture.wrapT = THREE.RepeatWrapping;
+        
+        // Ground (crop field)
+        const groundGeometry = new THREE.PlaneGeometry(groundSize, groundSize);
+        const groundMaterial = new THREE.MeshStandardMaterial({ 
+            map: groundTexture,
+            roughness: 0.8,
+            metalness: 0.2
+        });
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = -2;
+        scene.add(ground);
+        
+        // Grid lines for sectors
+        const gridHelper = new THREE.GridHelper(groundSize, 2);
+        gridHelper.position.y = -1.9;
+        scene.add(gridHelper);
+        
+        // Sector planes (invisible but for collision detection)
+        const sectorSize = 50; // 50x50 = 2500 sq units (representing 250 sq m)
+        const sectors = [];
+        const sectorMaterials = [
+            new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.2 }),
+            new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.2 }),
+            new THREE.MeshBasicMaterial({ color: 0x0000ff, transparent: true, opacity: 0.2 }),
+            new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.2 })
+        ];
+        
+        // Moisture data for sectors
+        const sectorMoisture = [0, 0, 0, 0]; // 0-100% for each sector
+        
+        // Create sectors
+        const sectorGeometry = new THREE.PlaneGeometry(sectorSize, sectorSize);
+        
+        // Sector 1 (Top Left)
+        const sector1 = new THREE.Mesh(sectorGeometry, sectorMaterials[0]);
+        sector1.rotation.x = -Math.PI / 2;
+        sector1.position.set(-sectorSize/2, -1.8, -sectorSize/2);
+        scene.add(sector1);
+        sectors.push(sector1);
+        
+        // Sector 2 (Top Right)
+        const sector2 = new THREE.Mesh(sectorGeometry, sectorMaterials[1]);
+        sector2.rotation.x = -Math.PI / 2;
+        sector2.position.set(sectorSize/2, -1.8, -sectorSize/2);
+        scene.add(sector2);
+        sectors.push(sector2);
+        
+        // Sector 3 (Bottom Left)
+        const sector3 = new THREE.Mesh(sectorGeometry, sectorMaterials[2]);
+        sector3.rotation.x = -Math.PI / 2;
+        sector3.position.set(-sectorSize/2, -1.8, sectorSize/2);
+        scene.add(sector3);
+        sectors.push(sector3);
+        
+        // Sector 4 (Bottom Right)
+        const sector4 = new THREE.Mesh(sectorGeometry, sectorMaterials[3]);
+        sector4.rotation.x = -Math.PI / 2;
+        sector4.position.set(sectorSize/2, -1.8, sectorSize/2);
+        scene.add(sector4);
+        sectors.push(sector4);
+        
+        // Create drone
+        const droneGroup = new THREE.Group();
+        
+        // Drone body
+        const bodyGeometry = new THREE.BoxGeometry(2, 0.5, 2);
+        const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0x333333 });
+        const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+        droneGroup.add(body);
+        
+        // Drone rotors
+        const rotorGeometry = new THREE.CylinderGeometry(0.5, 0.5, 0.1, 16);
+        const rotorMaterial = new THREE.MeshStandardMaterial({ color: 0x666666 });
+        
+        // Add four rotors
+        const rotorPositions = [
+            { x: -0.8, z: -0.8 },
+            { x: 0.8, z: -0.8 },
+            { x: -0.8, z: 0.8 },
+            { x: 0.8, z: 0.8 }
+        ];
+        
+        const rotors = [];
+        rotorPositions.forEach(pos => {
+            const rotor = new THREE.Mesh(rotorGeometry, rotorMaterial);
+            rotor.position.set(pos.x, 0.3, pos.z);
+            droneGroup.add(rotor);
+            rotors.push(rotor);
+        });
+        
+        // Spray nozzle
+        const nozzleGeometry = new THREE.CylinderGeometry(0.1, 0.1, 0.3, 16);
+        const nozzleMaterial = new THREE.MeshStandardMaterial({ color: 0x999999 });
+        const nozzle = new THREE.Mesh(nozzleGeometry, nozzleMaterial);
+        nozzle.position.y = -0.4;
+        nozzle.rotation.x = Math.PI / 2;
+        droneGroup.add(nozzle);
+        
+        // Water particles
+        const waterParticles = new THREE.Group();
+        droneGroup.add(waterParticles);
+        
+        // Add drone to scene
+        scene.add(droneGroup);
+        droneGroup.position.y = 10; // Start at height 10
+        
+        // Camera setup
+        camera.position.set(0, 20, 30);
+        camera.lookAt(droneGroup.position);
+        
+        // Controls
+        let selectedSector = null;
+        let isSpraying = false;
+        let isOutOfBounds = false;
+        
+        // Keyboard controls
+        const keys = {};
+        document.addEventListener('keydown', (e) => {
+            keys[e.key.toLowerCase()] = true;
+            
+            // Toggle spraying with space
+            if (e.code === 'Space') {
+                toggleSpraying();
+            }
+        });
+        
+        document.addEventListener('keyup', (e) => {
+            keys[e.key.toLowerCase()] = false;
+        });
+        
+        // Movement parameters
+        const moveSpeed = 0.5;
+        const rotationSpeed = 0.02;
+        const maxHeight = 30;
+        const minHeight = 3;
+        
+        // Sector selection
+        function selectSector(num) {
+            if (selectedSector !== null) {
+                sectors[selectedSector - 1].material.opacity = 0.2;
+                document.getElementById(`sector${selectedSector}`).classList.remove('selected');
+            }
+            
+            selectedSector = num;
+            sectors[selectedSector - 1].material.opacity = 0.4;
+            document.getElementById(`sector${selectedSector}`).classList.add('selected');
+            document.getElementById('sector').textContent = num;
+            
+            // Update hydration display
+            updateHydrationDisplay();
+            checkBounds();
+        }
+        
+        // Update hydration level display
+        function updateHydrationDisplay() {
+            if (selectedSector !== null) {
+                document.getElementById('hydration').textContent = 
+                    `${Math.round(sectorMoisture[selectedSector - 1])}%`;
+            } else {
+                document.getElementById('hydration').textContent = '0%';
+            }
+        }
+        
+        // Toggle water spraying
+        function toggleSpraying() {
+            isSpraying = !isSpraying;
+            document.getElementById('spraying').textContent = isSpraying ? 'On' : 'Off';
+            
+            if (isSpraying) {
+                createWaterParticles();
+            } else {
+                // Remove all water particles
+                while (waterParticles.children.length > 0) {
+                    waterParticles.remove(waterParticles.children[0]);
+                }
+            }
+        }
+        
+        // Create water particles
+        function createWaterParticles() {
+            if (!isSpraying) return;
+            
+            const particleGeometry = new THREE.SphereGeometry(0.05, 8, 8);
+            const particleMaterial = new THREE.MeshStandardMaterial({ color: 0x00aaff, transparent: true, opacity: 0.7 });
+            
+            for (let i = 0; i < 10; i++) {
+                const particle = new THREE.Mesh(particleGeometry, particleMaterial.clone());
+                // Random position around the nozzle
+                particle.position.set(
+                    (Math.random() - 0.5) * 2,
+                    -0.5,
+                    (Math.random() - 0.5) * 2
+                );
+                particle.userData = {
+                    velocity: new THREE.Vector3(
+                        (Math.random() - 0.5) * 0.1,
+                        -0.1 - Math.random() * 0.1,
+                        (Math.random() - 0.5) * 0.1
+                    ),
+                    life: 1.0,
+                    hasLanded: false
+                };
+                waterParticles.add(particle);
+            }
+        }
+        
+        // Update water particles
+        function updateWaterParticles() {
+            // Maybe create new particles
+            if (isSpraying && Math.random() > 0.5) {
+                createWaterParticles();
+            }
+            
+            // Update existing particles
+            for (let i = waterParticles.children.length - 1; i >= 0; i--) {
+                const particle = waterParticles.children[i];
+                
+                if (!particle.userData.hasLanded) {
+                    particle.position.add(particle.userData.velocity);
+                    
+                    // Check if particle has hit the ground
+                    if (particle.position.y + droneGroup.position.y <= -1.8) {
+                        particle.userData.hasLanded = true;
+                        
+                        // Get world position
+                        const worldPos = new THREE.Vector3();
+                        particle.getWorldPosition(worldPos);
+                        
+                        // Add water spot to the ground
+                        addWaterSpot(worldPos.x, worldPos.z);
+                    }
+                }
+                
+                particle.userData.life -= 0.02;
+                particle.material.opacity = particle.userData.life;
+                
+                if (particle.userData.life <= 0) {
+                    waterParticles.remove(particle);
+                }
+            }
+        }
+        
+        // Add water spot to the ground
+        function addWaterSpot(x, z) {
+            // Check if in a valid sector
+            if (selectedSector === null || isOutOfBounds) return;
+            
+            // Find which sector the point is in
+            let sectorIndex;
+            if (x < 0 && z < 0) sectorIndex = 0; // Sector 1
+            else if (x >= 0 && z < 0) sectorIndex = 1; // Sector 2
+            else if (x < 0 && z >= 0) sectorIndex = 2; // Sector 3
+            else sectorIndex = 3; // Sector 4
+            
+            // Only allow watering in the selected sector
+            if (sectorIndex !== selectedSector - 1) return;
+            
+            // Increase moisture in the sector (max 100%)
+            sectorMoisture[sectorIndex] = Math.min(100, sectorMoisture[sectorIndex] + 0.05);
+            
+            // Update hydration display
+            updateHydrationDisplay();
+            
+            // Convert world coordinates to texture coordinates (0-1)
+            const tx = (x + groundSize/2) / groundSize;
+            const ty = (z + groundSize/2) / groundSize;
+            
+            // Convert to pixel coordinates in the texture
+            const px = Math.floor(tx * textureSize);
+            const py = Math.floor(ty * textureSize);
+            
+            // Draw a blue circle on the texture
+            ctx.globalAlpha = 0.1; // Subtle effect, accumulates over time
+            ctx.fillStyle = '#006400'; // Dark green for wet soil
+            const radius = 3 + Math.random() * 2;
+            ctx.beginPath();
+            ctx.arc(px, py, radius, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Update the ground texture
+            groundTexture.needsUpdate = true;
+            
+            // Update sector color based on moisture
+            updateSectorColor(sectorIndex);
+        }
+        
+        // Update sector color based on moisture level
+        function updateSectorColor(sectorIndex) {
+            const moisture = sectorMoisture[sectorIndex];
+            
+            // Color ranges from light green (dry) to dark green (wet)
+            const r = Math.floor(124 - (moisture * 0.8)); // 124 to 44
+            const g = Math.floor(252 - (moisture * 1.0)); // 252 to 152
+            const b = Math.floor(0 + (moisture * 0.5));  // 0 to 50
+            
+            sectors[sectorIndex].material.color.setRGB(r/255, g/255, b/255);
+        }
+        
+        // Check if drone is in bounds
+        function checkBounds() {
+            if (!selectedSector) return;
+            
+            const droneX = droneGroup.position.x;
+            const droneZ = droneGroup.position.z;
+            
+            // Each sector's bounds
+            const bounds = [
+                { minX: -50, maxX: 0, minZ: -50, maxZ: 0 },     // Sector 1
+                { minX: 0, maxX: 50, minZ: -50, maxZ: 0 },      // Sector 2
+                { minX: -50, maxX: 0, minZ: 0, maxZ: 50 },      // Sector 3
+                { minX: 0, maxX: 50, minZ: 0, maxZ: 50 }        // Sector 4
+            ];
+            
+            const currentBounds = bounds[selectedSector - 1];
+            const wasOutOfBounds = isOutOfBounds;
+            
+            isOutOfBounds = !(
+                droneX >= currentBounds.minX && 
+                droneX <= currentBounds.maxX && 
+                droneZ >= currentBounds.minZ && 
+                droneZ <= currentBounds.maxZ
+            );
+            
+            // Show alert if out of bounds
+            document.getElementById('alert').style.display = isOutOfBounds ? 'block' : 'none';
+            
+            // If just went out of bounds, turn off spraying
+            if (!wasOutOfBounds && isOutOfBounds && isSpraying) {
+                toggleSpraying();
+            }
+        }
+        
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // Rotate rotors
+            rotors.forEach(rotor => {
+                rotor.rotation.y += 0.3;
+            });
+            
+            // Handle keyboard input
+            if (selectedSector !== null) {
+                let moved = false;
+                
+                if (keys['w']) {
+                    droneGroup.position.z -= moveSpeed;
+                    moved = true;
+                }
+                if (keys['s']) {
+                    droneGroup.position.z += moveSpeed;
+                    moved = true;
+                }
+                if (keys['a']) {
+                    droneGroup.position.x -= moveSpeed;
+                    moved = true;
+                }
+                if (keys['d']) {
+                    droneGroup.position.x += moveSpeed;
+                    moved = true;
+                }
+                if (keys['q'] && droneGroup.position.y < maxHeight) {
+                    droneGroup.position.y += moveSpeed;
+                    moved = true;
+                }
+                if (keys['e'] && droneGroup.position.y > minHeight) {
+                    droneGroup.position.y -= moveSpeed;
+                    moved = true;
+                }
+                
+                if (moved) {
+                    // Update position display
+                    document.getElementById('position').textContent = `${droneGroup.position.x.toFixed(1)}, ${droneGroup.position.y.toFixed(1)}, ${droneGroup.position.z.toFixed(1)}`;
+                    
+                    // Check if in bounds
+                    checkBounds();
+                    
+                    // Make camera follow drone
+                    camera.position.x = droneGroup.position.x;
+                    camera.position.z = droneGroup.position.z + 30;
+                    camera.lookAt(droneGroup.position);
+                }
+            }
+            
+            // Update water particles
+            updateWaterParticles();
+            
+            renderer.render(scene, camera);
+        }
+        
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+        
+        // Start animation
+        animate();
+    </script>
+</body>
+</html>
